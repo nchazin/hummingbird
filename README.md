@@ -6,7 +6,7 @@ hummingbird - no bullshit HTTP load testing suite
 
 Options are as follows:
 
-    hstress [-c CONCURRENCY] [-b BUCKETS] [-n COUNT] [-p NUMPROCS] [-r RPC] [-i INTERVAL] [HOST] [PORT]
+    hstress [-c CONCURRENCY] [-b BUCKETS] [-n COUNT] [-p NUMPROCS] [-r RPC] [-i INTERVAL] <-f URIFILE> [HOST] [PORT]
 
 The default host is `127.0.0.1`, and the default port is `80`.
 
@@ -27,6 +27,8 @@ The default host is `127.0.0.1`, and the default port is `80`.
   loops). The default value is `1`.
   
 * `-i` specifies the reporting interval in seconds
+* `-f` specifies an optional file to read request URI(s) from
+
 
 `hb` produces output like the following:
 
