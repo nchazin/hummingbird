@@ -79,6 +79,15 @@ void report();
 void sigint(int which);
 
 /*
+  configurable request uri parameters
+*/
+char** requests;
+int num_requests;
+int cur_request;
+
+#define BASE_LINES 10
+#define LINE_SIZE 256
+/*
 	Reporting.
 */
 
@@ -106,7 +115,7 @@ reportcb(int fd, short what, void *arg)
 	printf("%d\t", counts.errors);
 	printf("%d\t", counts.timeouts);
 	printf("%d\t", counts.closes);
-	
+
 	counts.errors = counts.timeouts = counts.closes = 0;
 
 	for(i=0; params.buckets[i]!=0; i++)
@@ -139,9 +148,9 @@ mkhttp()
 		note: we manage our own per-request timeouts, since the underlying
 		library does not give us enough error reporting fidelity
 	*/
-	
+
 	/* also set some socket options manually. */
-	
+
 
 	return(evcon);
 }
@@ -151,6 +160,8 @@ dispatch(struct evhttp_connection *evcon, int reqno)
 {
 	struct evhttp_request *evreq;
 	struct request *req;
+
+	char *request_uri;
 
 	if((req = calloc(1, sizeof(*req))) == nil)
 		panic("calloc");
@@ -171,7 +182,13 @@ dispatch(struct evhttp_connection *evcon, int reqno)
 	evtimer_set(&req->timeoutev, timeoutcb,(void *)req);
 	evtimer_add(&req->timeoutev, &timeouttv);
 
-	evhttp_make_request(evcon, evreq, EVHTTP_REQ_GET, "/");
+	request_uri = "/";
+	if (num_requests > 0) {
+		request_uri = requests[cur_request++];
+		cur_request = cur_request % (num_requests + 1);
+	}
+
+	evhttp_make_request(evcon, evreq, EVHTTP_REQ_GET, request_uri);
 }
 
 void
@@ -210,7 +227,7 @@ complete(int how, struct request *req)
 	}
 
 	total =
-	    counts.successes + counts.errors + 
+	    counts.successes + counts.errors +
 	    counts.timeouts /*+ counts.closes*/;
 	/* enqueue the next one */
 	if(params.count<0 || total<params.count){
@@ -218,7 +235,7 @@ complete(int how, struct request *req)
 			dispatch(req->evcon, req->evcon_reqno+1);
 		}else{
 			/* There seems to be a bug in libevent where the connection isn't really
-			 * freed until the event loop is unwound. We'll add ourselves back with a 
+			 * freed until the event loop is unwound. We'll add ourselves back with a
 			 * 0-second timeout. */
 			evhttp_connection_free(req->evcon);
 			timeoutev = mal(sizeof(*timeoutev));
@@ -233,7 +250,7 @@ complete(int how, struct request *req)
 			reportcb(0, 0, nil);  /* issue a last report */
 		}
 	}
-	
+
 	free(req);
 }
 
@@ -243,12 +260,12 @@ recvcb(struct evhttp_request *evreq, void *arg)
 
 	int status = Success;
 
-	/* 
-		It seems that, under certain circumstances, 
-		evreq may be null on failure.  
+	/*
+		It seems that, under certain circumstances,
+		evreq may be null on failure.
 
 		we'll count it as an error.
-		
+
 		it seems this happens when we run out of fds-- warn?
 	*/
 
@@ -263,7 +280,7 @@ void
 timeoutcb(int fd, short what, void *arg)
 {
 	struct request *req =(struct request *)arg;
-	
+
 	/* re-establish the connection */
 	evhttp_connection_free(req->evcon);
 	req->evcon = mkhttp();
@@ -314,7 +331,7 @@ chldreadcb(struct bufferevent *b, void *arg)
 				total += reportbuf[n][i];
 
 			printf("%d\n", mkrate(&lastreporttv, total));
-			
+
 			/* Aggregate. */
 			counts.errors += reportbuf[n][0];
 			counts.timeouts += reportbuf[n][1];
@@ -344,7 +361,7 @@ chlderrcb(struct bufferevent *b, short what, void *arg)
 	bufferevent_setcb(b, nil, nil, nil, nil);
 	bufferevent_disable(b, EV_READ | EV_WRITE);
 	bufferevent_free(b);
-	
+
 	/*if(--(*nprocs) == 0)
 		event_loopbreak();*/
 }
@@ -355,7 +372,7 @@ parentd(int nprocs, int *sockets)
 	int *fdp, i, status, size;
 	pid_t pid;
 	struct bufferevent *b;
-	
+
 	signal(SIGINT, sigint);
 
 	gettimeofday(&ratetv, nil);
@@ -370,7 +387,7 @@ parentd(int nprocs, int *sockets)
 
 	for(fdp=sockets; *fdp!=-1; fdp++){
 		b = bufferevent_new(
-		    *fdp, chldreadcb, nil, 
+		    *fdp, chldreadcb, nil,
 		    chlderrcb,(void *)&nprocs);
 		bufferevent_enable(b, EV_READ);
 	}
@@ -379,7 +396,7 @@ parentd(int nprocs, int *sockets)
 
 	for(i=0; i<nprocs; i++)
 		pid = waitpid(0, &status, 0);
-		
+
 	report();
 }
 
@@ -396,7 +413,7 @@ printcount(const char *name, int total, int count)
 	fprintf(stderr, "# %s", name);
 	if(total > 0)
 		fprintf(stderr, "\t%d\t%.02f", count,(1.0f*count) /(1.0f*total));
-	
+
 	fprintf(stderr, "\n");
 }
 
@@ -414,10 +431,10 @@ report()
 		snprintf(buf, sizeof(buf), "<%d\t", params.buckets[i]);
 		printcount(buf, total, counts.counters[i]);
 	}
-	
+
 	snprintf(buf, sizeof(buf), ">=%d\t", params.buckets[i - 1]);
 	printcount(buf, total, counts.counters[i]);
-	
+
 	/* no total */
 	fprintf(stderr, "# hz\t\t%d\n", mkrate(&ratetv, counts.successes));
 }
@@ -437,6 +454,55 @@ usage(char *cmd)
 
 	exit(0);
 }
+
+void
+read_config(char* config_file)
+{
+
+	int lines_allocated = BASE_LINES;
+	num_requests = 0;
+	requests = (char **)malloc(sizeof(char*)*lines_allocated);
+	if (requests == NULL) {
+        perror("Unable to allocate memory for requests at using defaults");
+        return;
+    }
+
+    FILE *fp = fopen(config_file, "r");
+    if (fp == NULL) {
+        perror("Error opening file.");
+        exit(1);
+	}
+
+    int i;
+    for (i=0;1;i++) {
+    	if (i >= lines_allocated) {
+    		lines_allocated = lines_allocated * 2;
+    		requests = (char**) realloc(requests, sizeof(char*) *lines_allocated);
+    		if (requests == NULL) {
+    			perror("Unable to reallocate memory for requests");
+        		return;
+			}
+		}
+		requests[i] = (char *)malloc(LINE_SIZE);
+		if (requests[i] == NULL) {
+			char buf[256];
+			snprintf(buf, 256, "Unable to allocate memory for request: %d",
+			         i);
+			perror(buf);
+			break;
+		}
+		if (fgets(requests[i],LINE_SIZE-1,fp)==NULL)
+            break;
+        int j;
+        for (j=strlen(requests[i])-1;j>=0 && (requests[i][j]=='\n' || requests[i][j]=='\r');j--)
+            ;
+        requests[i][j]='\0';
+   }
+
+   num_requests = i - 1;
+
+}
+
 
 int
 main(int argc, char **argv)
@@ -458,7 +524,7 @@ main(int argc, char **argv)
 
 	memset(&counts, 0, sizeof(counts));
 
-	while((ch = getopt(argc, argv, "c:b:n:p:r:i:h")) != -1){
+	while((ch = getopt(argc, argv, "c:b:n:p:r:i:hf:")) != -1){
 		switch(ch){
 		case 'b':
 			sp = optarg;
@@ -502,6 +568,11 @@ main(int argc, char **argv)
 		case 'h':
 			usage(cmd);
 			break;
+
+		case 'f':
+			read_config(optarg);
+			break;
+
 		}
 	}
 
@@ -520,7 +591,7 @@ main(int argc, char **argv)
 	default:
 		panic("only 0 or 1(host port) pair are allowed\n");
 	}
-	
+
 	http_hostname = host;
 	http_port = port;
 	if(snprintf(http_hosthdr, sizeof(http_hosthdr), "%s:%d", host, port) > sizeof(http_hosthdr))
@@ -538,7 +609,7 @@ main(int argc, char **argv)
 	event_dispatch(); exit(0);
 #endif
 
-	fprintf(stderr, "# params: c=%d p=%d n=%d r=%d\n", 
+	fprintf(stderr, "# params: c=%d p=%d n=%d r=%d\n",
 	    params.concurrency, nprocs, params.count, params.rpc);
 
 	fprintf(stderr, "# ts\t\terrors\ttimeout\tcloses\t");
