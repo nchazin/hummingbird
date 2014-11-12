@@ -495,8 +495,7 @@ read_config(char* config_file)
             break;
         int j;
         for (j=strlen(requests[i])-1;j>=0 && (requests[i][j]=='\n' || requests[i][j]=='\r');j--)
-            ;
-        requests[i][j]='\0';
+                requests[i][j]='\0';
    }
 
    num_requests = i - 1;
